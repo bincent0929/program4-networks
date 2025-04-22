@@ -26,6 +26,15 @@
  */
 int lookup_and_connect(const char *host, const char *service);
 /**
+ * This is just the example struct
+ */
+struct peer_entry {
+	uint32_t id;
+	int socket_descriptor;
+	char files[MAX_SIZE][MAX_FILE_SIZE];
+	struct sockaddr_in address;
+};
+/**
  * sends the join request to the registry to join the network
  * only needs to happen once per program run
  * sends a 1 byte field of 0, then a 4 byte peer ID
