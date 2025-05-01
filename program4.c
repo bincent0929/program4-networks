@@ -14,7 +14,7 @@
 #include <dirent.h> // for reading file names in a direcory for the publish function
 #include <arpa/inet.h>
 
-#define MAX_SIZE 1200 // needs to be this large to store the file names from publish
+#define MAX_FILES 10 // needs to be this large to store the file names from publish
 #define MAX_FILE_SIZE 100 // sets the max file size based on given specifications
 
 /*
@@ -25,34 +25,43 @@
  * the returned socket.
  */
 int lookup_and_connect(const char *host, const char *service);
-/**
- * This is just the example struct
- */
+
+// *******************************************************************************
+// EACH DECLARTION BELOW MUST BE DEFINED TO PROCESS DATA BASED ON PROGRAM 1 AND 2's
+// IMPLEMENTATIONS OF THE PEER VERSIONS OF THEIR FUNCTIONS
 struct peer_entry {
 	uint32_t id;
 	int socket_descriptor;
-	char files[MAX_SIZE][MAX_FILE_SIZE];
-	struct sockaddr_in address;
+	char files[MAX_FILES][MAX_FILE_SIZE]; // the files published by the peer
+	struct sockaddr_in address; 
+	// contains the IP adddress and port number for the peer
 };
-
 /**
- * 
+ * needs to support at least 5 peers
+ * create an instance of the peer_entry struct to store the
+ * current peer's values.
 */
 void join(const int *s, char *buf, const uint32_t *peerID);
 /**
- * 
+ * peer must have joined
+ * one publish per peer
+ * max of 10 filenames
+ * filename no longer than 100 characters including the null terminator
 */
 void publish(const int *s, char *buf);
 /**
- * 
+ * all values must be in network byte order
+ * if multiple peers have requested a file
+ * you can respond with the file from any of those peers
 */
 void search(const int *s, char *buf);
+// *******************************************************************************
 
 int main(int argc, char *argv[]) {
 	char *host;
 	char *server_port;
 	uint32_t peerID;
-	char buf[MAX_SIZE];
+	char buf[MAX_FILES];
 	int s;
     char userChoice[10];
 	bool hasJoined = false;
