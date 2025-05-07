@@ -3,7 +3,7 @@
  * ECEE 446 Section 1
  * Spring 2025
  */
-#include <stdio.h> // for file io
+#include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -11,128 +11,229 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdbool.h>
-#include <dirent.h> // for reading file names in a direcory for the publish function
 #include <arpa/inet.h>
+#include <errno.h>
 
-#define MAX_FILES 10 // needs to be this large to store the file names from publish
-#define MAX_FILE_SIZE 100 // sets the max file size based on given specifications
+#define MAX_FILES 10
+#define MAX_FILENAME_LEN 100
+#define MAX_PEERS 100
+#define BUF_SIZE 1024
 
-/*
- * Lookup a host IP address and connect to it using service. Arguments match the first two
- * arguments to getaddrinfo(3).
- *
- * Returns a connected socket descriptor or -1 on error. Caller is responsible for closing
- * the returned socket.
- */
-int lookup_and_connect(const char *host, const char *service);
-
-// *******************************************************************************
-// EACH DECLARTION BELOW MUST BE DEFINED TO PROCESS DATA BASED ON PROGRAM 1 AND 2's
-// IMPLEMENTATIONS OF THE PEER VERSIONS OF THEIR FUNCTIONS
 struct peer_entry {
-	uint32_t id;
-	int socket_descriptor;
-	char files[MAX_FILES][MAX_FILE_SIZE]; // the files published by the peer
-	struct sockaddr_in address; 
-	// contains the IP adddress and port number for the peer
+    uint32_t id;
+    int socket_descriptor;
+    char files[MAX_FILES][MAX_FILENAME_LEN];
+    int file_count;
+    struct sockaddr_in address;
 };
-/**
- * needs to support at least 5 peers
- * create an instance of the peer_entry struct to store the
- * current peer's values.
-*/
-void join(const int *s, char *buf, const uint32_t *peerID);
-/**
- * peer must have joined
- * one publish per peer
- * max of 10 filenames
- * filename no longer than 100 characters including the null terminator
-*/
-void publish(const int *s, char *buf);
-/**
- * all values must be in network byte order
- * if multiple peers have requested a file
- * you can respond with the file from any of those peers
-*/
-void search(const int *s, char *buf);
-// *******************************************************************************
+
+struct peer_entry peers[MAX_PEERS];
+int peer_count = 0;
+
+void print_summary(const char *cmd, const char *args) {
+    printf("TEST] %s %s\n", cmd, args);
+    fflush(stdout);
+}
+
+// helper function to read exact n bytes
+int read_n_bytes(int sock, char *buf, int n) {
+    int total = 0;
+    int bytes;
+    while (total < n) {
+        bytes = recv(sock, buf + total, n - total, 0);
+        if (bytes <= 0) return bytes;
+        total += bytes;
+    }
+    return total;
+}
 
 int main(int argc, char *argv[]) {
-	char *host;
-	char *server_port;
-	uint32_t peerID;
-	char buf[MAX_FILES];
-	int s;
-    char userChoice[10];
-	bool hasJoined = false;
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <port>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
 
-	if ( argc == 4 ) {
-		host = argv[1];
-		server_port = argv[2];
-		peerID = atoi(argv[3]);
-	}
-	else {
-		fprintf( stderr, "usage: %s host\n", argv[0] );
-		exit( 1 );
-	}
+    int listen_sock, new_sock, max_fd, activity, i;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t client_len;
+    fd_set read_fds, master_fds;
 
-	/* Lookup IP and connect to server */
-	if ( ( s = lookup_and_connect( host, server_port ) ) < 0 ) {
-		exit( 1 );
-	}
+    if ((listen_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("socket");
+        exit(EXIT_FAILURE);
+    }
 
-	while(1) {
-		// processing of peer interaction
-	}
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(atoi(argv[1]));
 
-}
+    if (bind(listen_sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("bind");
+        close(listen_sock);
+        exit(EXIT_FAILURE);
+    }
 
-void join(const int *s, char *buf, const uint32_t *peerID) {
-	
-}
+    if (listen(listen_sock, 5) < 0) {
+        perror("listen");
+        close(listen_sock);
+        exit(EXIT_FAILURE);
+    }
 
-void publish(const int *s, char *buf) {
-    
-}
+    FD_ZERO(&master_fds);
+    FD_SET(listen_sock, &master_fds);
+    max_fd = listen_sock;
 
-void search(const int *s, char *buf) {
-    
-}
+    while (1) {
+        read_fds = master_fds;
+        activity = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
 
-int lookup_and_connect( const char *host, const char *service ) {
-	struct addrinfo hints;
-	struct addrinfo *rp, *result;
-	int s;
+        if (activity < 0 && errno != EINTR) {
+            perror("select");
+            break;
+        }
 
-	/* Translate host name into peer's IP address */
-	memset( &hints, 0, sizeof( hints ) );
-	hints.ai_family = AF_INET;
-	hints.ai_socktype = SOCK_STREAM;
-	hints.ai_flags = 0;
-	hints.ai_protocol = 0;
+        for (i = 0; i <= max_fd; i++) {
+            if (FD_ISSET(i, &read_fds)) {
+                if (i == listen_sock) {
+                    client_len = sizeof(client_addr);
+                    new_sock = accept(listen_sock, (struct sockaddr *)&client_addr, &client_len);
+                    if (new_sock < 0) {
+                        perror("accept");
+                        continue;
+                    }
+                    FD_SET(new_sock, &master_fds);
+                    if (new_sock > max_fd) max_fd = new_sock;
+                } else {
+                    char header[8];
+                    int bytes = read_n_bytes(i, header, 4);
+                    if (bytes <= 0) {
+                        close(i);
+                        FD_CLR(i, &master_fds);
+                        for (int j = 0; j < peer_count; j++) {
+                            if (peers[j].socket_descriptor == i) {
+                                peers[j] = peers[--peer_count];
+                                break;
+                            }
+                        }
+                        continue;
+                    }
 
-	if ( ( s = getaddrinfo( host, service, &hints, &result ) ) != 0 ) {
-		fprintf( stderr, "stream-talk-client: getaddrinfo: %s\n", gai_strerror( s ) );
-		return -1;
-	}
+                    uint32_t cmd;
+                    memcpy(&cmd, header, 4);
+                    cmd = ntohl(cmd);
 
-	/* Iterate through the address list and try to connect */
-	for ( rp = result; rp != NULL; rp = rp->ai_next ) {
-		if ( ( s = socket( rp->ai_family, rp->ai_socktype, rp->ai_protocol ) ) == -1 ) {
-			continue;
-		}
+                    if (cmd == 1) { // JOIN
+                        bytes = read_n_bytes(i, header + 4, 4);
+                        if (bytes <= 0) {
+                            close(i);
+                            FD_CLR(i, &master_fds);
+                            continue;
+                        }
+                        uint32_t peer_id;
+                        memcpy(&peer_id, header + 4, 4);
+                        peer_id = ntohl(peer_id);
 
-		if ( connect( s, rp->ai_addr, rp->ai_addrlen ) != -1 ) {
-			break;
-		}
+                        struct sockaddr_in addr;
+                        socklen_t len = sizeof(addr);
+                        getpeername(i, (struct sockaddr *)&addr, &len);
 
-		close( s );
-	}
-	if ( rp == NULL ) {
-		perror( "stream-talk-client: connect" );
-		return -1;
-	}
-	freeaddrinfo( result );
+                        peers[peer_count].id = peer_id;
+                        peers[peer_count].socket_descriptor = i;
+                        peers[peer_count].address = addr;
+                        peers[peer_count].file_count = 0;
+                        peer_count++;
 
-	return s;
+                        char msg[64];
+                        snprintf(msg, sizeof(msg), "%u", peer_id);
+                        print_summary("JOIN", msg);
+
+                    } else if (cmd == 2) { // PUBLISH
+                        bytes = read_n_bytes(i, header + 4, 4);
+                        if (bytes <= 0) {
+                            close(i);
+                            FD_CLR(i, &master_fds);
+                            continue;
+                        }
+                        uint32_t file_count;
+                        memcpy(&file_count, header + 4, 4);
+                        file_count = ntohl(file_count);
+
+                        char filebuf[MAX_FILES * MAX_FILENAME_LEN];
+                        int total_file_bytes = file_count * MAX_FILENAME_LEN;
+                        if (read_n_bytes(i, filebuf, total_file_bytes) <= 0) {
+                            close(i);
+                            FD_CLR(i, &master_fds);
+                            continue;
+                        }
+
+                        for (int j = 0; j < file_count; j++) {
+                            strncpy(peers[peer_count - 1].files[j], filebuf + j * MAX_FILENAME_LEN, MAX_FILENAME_LEN);
+                            peers[peer_count - 1].files[j][MAX_FILENAME_LEN - 1] = '\0';
+                        }
+                        peers[peer_count - 1].file_count = file_count;
+
+                        char msg[512] = {0};
+                        snprintf(msg, sizeof(msg), "%u", file_count);
+                        for (int j = 0; j < file_count; j++) {
+                            strncat(msg, " ", sizeof(msg) - strlen(msg) - 1);
+                            strncat(msg, peers[peer_count - 1].files[j], sizeof(msg) - strlen(msg) - 1);
+                        }
+                        print_summary("PUBLISH", msg);
+
+                    } else if (cmd == 3) { // SEARCH
+                        char filename[MAX_FILENAME_LEN];
+                        if (read_n_bytes(i, filename, MAX_FILENAME_LEN) <= 0) {
+                            close(i);
+                            FD_CLR(i, &master_fds);
+                            continue;
+                        }
+                        filename[MAX_FILENAME_LEN - 1] = '\0';
+
+                        bool found = false;
+                        for (int j = 0; j < peer_count; j++) {
+                            for (int k = 0; k < peers[j].file_count; k++) {
+                                if (strcmp(filename, peers[j].files[k]) == 0) {
+                                    char ip_str[INET_ADDRSTRLEN];
+                                    inet_ntop(AF_INET, &peers[j].address.sin_addr, ip_str, sizeof(ip_str));
+                                    char msg[128];
+                                    snprintf(msg, sizeof(msg), "%s %u %s:%u",
+                                             filename, peers[j].id, ip_str, ntohs(peers[j].address.sin_port));
+                                    print_summary("SEARCH", msg);
+
+                                    uint32_t id = htonl(peers[j].id);
+                                    uint32_t ip = peers[j].address.sin_addr.s_addr;
+                                    uint16_t port = peers[j].address.sin_port;
+                                    send(i, &id, sizeof(uint32_t), 0);
+                                    send(i, &ip, sizeof(uint32_t), 0);
+                                    send(i, &port, sizeof(uint16_t), 0);
+
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (found) break;
+                        }
+                        if (!found) {
+                            char msg[128];
+                            snprintf(msg, sizeof(msg), "%s 0 0.0.0.0:0", filename);
+                            print_summary("SEARCH", msg);
+
+                            uint32_t zero = 0;
+                            uint32_t zip = htonl(0);
+                            uint16_t zport = 0;
+                            send(i, &zero, sizeof(uint32_t), 0);
+                            send(i, &zip, sizeof(uint32_t), 0);
+                            send(i, &zport, sizeof(uint16_t), 0);
+                        }
+                    } else {
+                        fprintf(stderr, "DEBUG: unknown command code %u\n", cmd);
+                    }
+                }
+            }
+        }
+    }
+
+    close(listen_sock);
+    return 0;
 }
