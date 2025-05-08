@@ -1,239 +1,221 @@
-/**
- * Group Members: Vincent Roberson and Muhammad I Sohail
- * ECEE 446 Section 1
- * Spring 2025
- */
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netdb.h>
 #include <string.h>
 #include <unistd.h>
-#include <stdbool.h>
-#include <arpa/inet.h>
 #include <errno.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/select.h>
 
+#define MAX_PEERS 10
 #define MAX_FILES 10
 #define MAX_FILENAME_LEN 100
-#define MAX_PEERS 100
-#define BUF_SIZE 1024
+#define MAX_BUF_SIZE 1024
 
 struct peer_entry {
     uint32_t id;
-    int socket_descriptor;
-    char files[MAX_FILES][MAX_FILENAME_LEN];
+    int socket_fd;
     int file_count;
+    char files[MAX_FILES][MAX_FILENAME_LEN];
     struct sockaddr_in address;
 };
 
 struct peer_entry peers[MAX_PEERS];
 int peer_count = 0;
 
-void print_summary(const char *cmd, const char *args) {
-    printf("TEST] %s %s\n", cmd, args);
-    fflush(stdout);
+int find_peer_by_socket(int socket_fd) {
+    for (int i = 0; i < peer_count; i++) {
+        if (peers[i].socket_fd == socket_fd)
+            return i;
+    }
+    return -1;
 }
 
-// helper function to read exact n bytes
-int read_n_bytes(int sock, char *buf, int n) {
-    int total = 0;
-    int bytes;
-    while (total < n) {
-        bytes = recv(sock, buf + total, n - total, 0);
-        if (bytes <= 0) return bytes;
-        total += bytes;
+int find_peer_with_file(const char *filename) {
+    for (int i = 0; i < peer_count; i++) {
+        for (int j = 0; j < peers[i].file_count; j++) {
+            if (strcmp(peers[i].files[j], filename) == 0) {
+                return i;
+            }
+        }
     }
-    return total;
+    return -1;
+}
+
+void remove_peer(int socket_fd) {
+    int index = find_peer_by_socket(socket_fd);
+    if (index != -1) {
+        close(peers[index].socket_fd);
+        peers[index] = peers[peer_count - 1];
+        peer_count--;
+    }
+}
+
+void handle_join(int sockfd, uint32_t peer_id) {
+    if (peer_count >= MAX_PEERS) return;
+
+    int index = peer_count++;
+    peers[index].id = peer_id;
+    peers[index].socket_fd = sockfd;
+    peers[index].file_count = 0;
+
+    socklen_t addrlen = sizeof(peers[index].address);
+    getpeername(sockfd, (struct sockaddr*)&peers[index].address, &addrlen);
+
+    printf("TEST] JOIN %u\n", peer_id);
+}
+
+void handle_publish(int sockfd, char *buf, int msg_len) {
+    int index = find_peer_by_socket(sockfd);
+    if (index == -1) return;
+
+    int offset = 8;
+    int count = 0;
+
+    while (offset < msg_len && count < MAX_FILES) {
+        int len = strnlen(buf + offset, MAX_FILENAME_LEN);
+        if (len <= 0 || len >= MAX_FILENAME_LEN || offset + len + 1 > msg_len) break;
+        strncpy(peers[index].files[count], buf + offset, MAX_FILENAME_LEN);
+        count++;
+        offset += len + 1;
+    }
+
+    peers[index].file_count = count;
+
+    printf("TEST] PUBLISH %d", count);
+    for (int i = 0; i < count; i++) {
+        printf(" %s", peers[index].files[i]);
+    }
+    printf("\n");
+}
+
+void handle_search(int sockfd, char *buf) {
+    char *filename = buf + 8;
+    int index = find_peer_with_file(filename);
+
+    char response[14];  // SEARCHOK + IP (4) + Port (2)
+    memcpy(response, "SEARCHOK", 8);
+
+    uint32_t id = 0;
+    uint32_t ip = 0;
+    uint16_t port = 0;
+
+    if (index != -1) {
+        ip = peers[index].address.sin_addr.s_addr;
+        port = peers[index].address.sin_port;
+        id = peers[index].id;
+
+        memcpy(response + 8, &ip, 4);
+        memcpy(response + 12, &port, 2);
+    } else {
+        memset(response + 8, 0, 6);
+    }
+
+    send(sockfd, response, 14, 0);
+
+    struct in_addr addr;
+    addr.s_addr = ip;
+    char ip_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &addr, ip_str, INET_ADDRSTRLEN);
+
+    printf("TEST] SEARCH %s %u %s:%u\n",
+        filename,
+        id,
+        index != -1 ? ip_str : "0.0.0.0",
+        index != -1 ? ntohs(port) : 0
+    );
 }
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <port>\n", argv[0]);
-        exit(EXIT_FAILURE);
+        exit(1);
     }
 
-    int listen_sock, new_sock, max_fd, activity, i;
-    struct sockaddr_in server_addr, client_addr;
-    socklen_t client_len;
-    fd_set read_fds, master_fds;
+    int registry_fd, new_fd, max_fd;
+    struct sockaddr_in registry_addr, peer_addr;
+    socklen_t addrlen;
+    char buffer[MAX_BUF_SIZE];
 
-    if ((listen_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    registry_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (registry_fd < 0) {
         perror("socket");
-        exit(EXIT_FAILURE);
+        exit(1);
     }
 
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(atoi(argv[1]));
+    int opt = 1;
+    setsockopt(registry_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-    if (bind(listen_sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+    memset(&registry_addr, 0, sizeof(registry_addr));
+    registry_addr.sin_family = AF_INET;
+    registry_addr.sin_port = htons(atoi(argv[1]));
+    registry_addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(registry_fd, (struct sockaddr *)&registry_addr, sizeof(registry_addr)) < 0) {
         perror("bind");
-        close(listen_sock);
-        exit(EXIT_FAILURE);
+        close(registry_fd);
+        exit(1);
     }
 
-    if (listen(listen_sock, 5) < 0) {
+    if (listen(registry_fd, MAX_PEERS) < 0) {
         perror("listen");
-        close(listen_sock);
-        exit(EXIT_FAILURE);
+        close(registry_fd);
+        exit(1);
     }
 
-    FD_ZERO(&master_fds);
-    FD_SET(listen_sock, &master_fds);
-    max_fd = listen_sock;
+    fd_set master_set, read_fds;
+    FD_ZERO(&master_set);
+    FD_SET(registry_fd, &master_set);
+    max_fd = registry_fd;
 
     while (1) {
-        read_fds = master_fds;
-        activity = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
+        read_fds = master_set;
 
-        if (activity < 0 && errno != EINTR) {
+        if (select(max_fd + 1, &read_fds, NULL, NULL, NULL) < 0) {
             perror("select");
-            break;
+            exit(1);
         }
 
-        for (i = 0; i <= max_fd; i++) {
-            if (FD_ISSET(i, &read_fds)) {
-                if (i == listen_sock) {
-                    client_len = sizeof(client_addr);
-                    new_sock = accept(listen_sock, (struct sockaddr *)&client_addr, &client_len);
-                    if (new_sock < 0) {
-                        perror("accept");
-                        continue;
-                    }
-                    FD_SET(new_sock, &master_fds);
-                    if (new_sock > max_fd) max_fd = new_sock;
+        for (int i = 0; i <= max_fd; i++) {
+            if (!FD_ISSET(i, &read_fds)) continue;
+
+            if (i == registry_fd) {
+                addrlen = sizeof(peer_addr);
+                new_fd = accept(registry_fd, (struct sockaddr*)&peer_addr, &addrlen);
+                if (new_fd < 0) {
+                    perror("accept");
+                    continue;
+                }
+                FD_SET(new_fd, &master_set);
+                if (new_fd > max_fd) max_fd = new_fd;
+            } else {
+                int bytes_received = recv(i, buffer, MAX_BUF_SIZE, 0);
+                if (bytes_received <= 0) {
+                    remove_peer(i);
+                    FD_CLR(i, &master_set);
+                    close(i);
                 } else {
-                    char header[8];
-                    int bytes = read_n_bytes(i, header, 4);
-                    if (bytes <= 0) {
-                        close(i);
-                        FD_CLR(i, &master_fds);
-                        for (int j = 0; j < peer_count; j++) {
-                            if (peers[j].socket_descriptor == i) {
-                                peers[j] = peers[--peer_count];
-                                break;
-                            }
-                        }
-                        continue;
-                    }
+                    if (bytes_received < MAX_BUF_SIZE)
+                        buffer[bytes_received] = '\0';
+                    else
+                        buffer[MAX_BUF_SIZE - 1] = '\0';
 
-                    uint32_t cmd;
-                    memcpy(&cmd, header, 4);
-                    cmd = ntohl(cmd);
-
-                    if (cmd == 1) { // JOIN
-                        bytes = read_n_bytes(i, header + 4, 4);
-                        if (bytes <= 0) {
-                            close(i);
-                            FD_CLR(i, &master_fds);
-                            continue;
-                        }
+                    if (strncmp(buffer, "JOIN", 4) == 0 && bytes_received >= 8) {
                         uint32_t peer_id;
-                        memcpy(&peer_id, header + 4, 4);
-                        peer_id = ntohl(peer_id);
-
-                        struct sockaddr_in addr;
-                        socklen_t len = sizeof(addr);
-                        getpeername(i, (struct sockaddr *)&addr, &len);
-
-                        peers[peer_count].id = peer_id;
-                        peers[peer_count].socket_descriptor = i;
-                        peers[peer_count].address = addr;
-                        peers[peer_count].file_count = 0;
-                        peer_count++;
-
-                        char msg[64];
-                        snprintf(msg, sizeof(msg), "%u", peer_id);
-                        print_summary("JOIN", msg);
-
-                    } else if (cmd == 2) { // PUBLISH
-                        bytes = read_n_bytes(i, header + 4, 4);
-                        if (bytes <= 0) {
-                            close(i);
-                            FD_CLR(i, &master_fds);
-                            continue;
-                        }
-                        uint32_t file_count;
-                        memcpy(&file_count, header + 4, 4);
-                        file_count = ntohl(file_count);
-
-                        char filebuf[MAX_FILES * MAX_FILENAME_LEN];
-                        int total_file_bytes = file_count * MAX_FILENAME_LEN;
-                        if (read_n_bytes(i, filebuf, total_file_bytes) <= 0) {
-                            close(i);
-                            FD_CLR(i, &master_fds);
-                            continue;
-                        }
-
-                        for (int j = 0; j < file_count; j++) {
-                            strncpy(peers[peer_count - 1].files[j], filebuf + j * MAX_FILENAME_LEN, MAX_FILENAME_LEN);
-                            peers[peer_count - 1].files[j][MAX_FILENAME_LEN - 1] = '\0';
-                        }
-                        peers[peer_count - 1].file_count = file_count;
-
-                        char msg[512] = {0};
-                        snprintf(msg, sizeof(msg), "%u", file_count);
-                        for (int j = 0; j < file_count; j++) {
-                            strncat(msg, " ", sizeof(msg) - strlen(msg) - 1);
-                            strncat(msg, peers[peer_count - 1].files[j], sizeof(msg) - strlen(msg) - 1);
-                        }
-                        print_summary("PUBLISH", msg);
-
-                    } else if (cmd == 3) { // SEARCH
-                        char filename[MAX_FILENAME_LEN];
-                        if (read_n_bytes(i, filename, MAX_FILENAME_LEN) <= 0) {
-                            close(i);
-                            FD_CLR(i, &master_fds);
-                            continue;
-                        }
-                        filename[MAX_FILENAME_LEN - 1] = '\0';
-
-                        bool found = false;
-                        for (int j = 0; j < peer_count; j++) {
-                            for (int k = 0; k < peers[j].file_count; k++) {
-                                if (strcmp(filename, peers[j].files[k]) == 0) {
-                                    char ip_str[INET_ADDRSTRLEN];
-                                    inet_ntop(AF_INET, &peers[j].address.sin_addr, ip_str, sizeof(ip_str));
-                                    char msg[128];
-                                    snprintf(msg, sizeof(msg), "%s %u %s:%u",
-                                             filename, peers[j].id, ip_str, ntohs(peers[j].address.sin_port));
-                                    print_summary("SEARCH", msg);
-
-                                    uint32_t id = htonl(peers[j].id);
-                                    uint32_t ip = peers[j].address.sin_addr.s_addr;
-                                    uint16_t port = peers[j].address.sin_port;
-                                    send(i, &id, sizeof(uint32_t), 0);
-                                    send(i, &ip, sizeof(uint32_t), 0);
-                                    send(i, &port, sizeof(uint16_t), 0);
-
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if (found) break;
-                        }
-                        if (!found) {
-                            char msg[128];
-                            snprintf(msg, sizeof(msg), "%s 0 0.0.0.0:0", filename);
-                            print_summary("SEARCH", msg);
-
-                            uint32_t zero = 0;
-                            uint32_t zip = htonl(0);
-                            uint16_t zport = 0;
-                            send(i, &zero, sizeof(uint32_t), 0);
-                            send(i, &zip, sizeof(uint32_t), 0);
-                            send(i, &zport, sizeof(uint16_t), 0);
-                        }
-                    } else {
-                        fprintf(stderr, "DEBUG: unknown command code %u\n", cmd);
+                        memcpy(&peer_id, buffer + 4, 4);
+                        handle_join(i, ntohl(peer_id));
+                    } else if (strncmp(buffer, "PUBLISH", 7) == 0 && bytes_received >= 8) {
+                        handle_publish(i, buffer, bytes_received);
+                    } else if (strncmp(buffer, "SEARCH", 6) == 0 && bytes_received >= 8) {
+                        handle_search(i, buffer);
                     }
                 }
             }
         }
     }
 
-    close(listen_sock);
+    close(registry_fd);
     return 0;
 }
