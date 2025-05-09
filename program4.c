@@ -23,117 +23,13 @@ struct peer_entry {
     struct sockaddr_in address;
 };
 
-struct peer_entry peers[MAX_PEERS];
-int peer_count = 0;
-
-// Finds the index of a peer based on its socket FD
-int find_peer_by_socket(int socket_fd) {
-    for (int i = 0; i < peer_count; i++) {
-        if (peers[i].socket_fd == socket_fd)
-            return i;
-    }
-    return -1;
-}
-
-// Finds a peer that has the requested file
-int find_peer_with_file(const char *filename) {
-    for (int i = 0; i < peer_count; i++) {
-        for (int j = 0; j < peers[i].file_count; j++) {
-            if (strcmp(peers[i].files[j], filename) == 0) {
-                return i;
-            }
-        }
-    }
-    return -1;
-}
-
-// Removes a peer from the registry by socket FD
-void remove_peer(int socket_fd) {
-    int index = find_peer_by_socket(socket_fd);
-    if (index != -1) {
-        close(peers[index].socket_fd);
-        peers[index] = peers[peer_count - 1];
-        peer_count--;
-    }
-}
-
-// Handles a JOIN request from a peer
-void handle_join(int sockfd, uint32_t peer_id) {
-    if (peer_count >= MAX_PEERS) return;
-
-    int index = peer_count++;
-    peers[index].id = peer_id;
-    peers[index].socket_fd = sockfd;
-    peers[index].file_count = 0;
-
-    socklen_t addrlen = sizeof(peers[index].address);
-    getpeername(sockfd, (struct sockaddr*)&peers[index].address, &addrlen);
-
-    printf("TEST] JOIN %u\n", peer_id);
-}
-
-// Handles a PUBLISH request and stores filenames sent by the peer
-void handle_publish(int sockfd, char *buf, int msg_len) {
-    int index = find_peer_by_socket(sockfd);
-    if (index == -1) return;
-
-    int offset = 8;
-    int count = 0;
-
-    while (offset < msg_len && count < MAX_FILES) {
-        int len = strnlen(buf + offset, MAX_FILENAME_LEN);
-        if (len <= 0 || len >= MAX_FILENAME_LEN || offset + len + 1 > msg_len) break;
-        strncpy(peers[index].files[count], buf + offset, MAX_FILENAME_LEN);
-        count++;
-        offset += len + 1;
-    }
-
-    peers[index].file_count = count;
-
-    printf("TEST] PUBLISH %d", count);
-    for (int i = 0; i < count; i++) {
-        printf(" %s", peers[index].files[i]);
-    }
-    printf("\n");
-}
-
-// Handles a SEARCH request from a peer looking for a file
-void handle_search(int sockfd, char *buf) {
-    char *filename = buf + 8;
-    int index = find_peer_with_file(filename);
-
-    char response[14]; 
-    memcpy(response, "SEARCHOK", 8);
-
-    uint32_t id = 0;
-    uint32_t ip = 0;
-    uint16_t port = 0;
-
-    if (index != -1) {
-        ip = peers[index].address.sin_addr.s_addr;
-        port = peers[index].address.sin_port;
-        id = peers[index].id;
-
-        memcpy(response + 8, &ip, 4);
-        memcpy(response + 12, &port, 2);
-    } else {
-        memset(response + 8, 0, 6);
-    }
-
-    send(sockfd, response, 14, 0);
-
-    struct in_addr addr;
-    addr.s_addr = ip;
-    char ip_str[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &addr, ip_str, INET_ADDRSTRLEN);
-
-    printf("TEST] SEARCH %s %u %s:%u\n",
-        filename,
-        id,
-        index != -1 ? ip_str : "0.0.0.0",
-        index != -1 ? ntohs(port) : 0
-    );
-}
+// peer_count and struct peers[MAX_PEERS]
+int find_peer_by_socket(int socket_fd, int& peer_count, struct peer_entry *peers);
+int find_peer_with_file(const char *filename, int& peer_count, struct peer_entry *peers);
+void remove_peer(int socket_fd, int& peer_count);
+void handle_join(int sockfd, uint32_t peer_id, int& peer_count, struct peer_entry *peers);
+void handle_publish(int sockfd, char *buf, int msg_len, struct peer_entry *peers);
+void handle_search(int sockfd, char *buf, struct peer_entry *peers);
 
 // Main function initializes server and handles client communication
 int main(int argc, char *argv[]) {
@@ -142,7 +38,10 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    int registry_fd, new_fd, max_fd;
+	struct peer_entry peers[MAX_PEERS];
+	int peer_count = 0;
+    
+	int registry_fd, new_fd, max_fd;
     struct sockaddr_in registry_addr, peer_addr;
     socklen_t addrlen;
     char buffer[MAX_BUF_SIZE];
@@ -235,4 +134,113 @@ int main(int argc, char *argv[]) {
 
     close(registry_fd);
     return 0;
+}
+
+// Finds the index of a peer based on its socket FD
+int find_peer_by_socket(int socket_fd, int peer_count, struct peer_entry *peers) {
+    for (int i = 0; i < peer_count; i++) {
+        if (peers[i].socket_fd == socket_fd)
+            return i;
+    }
+    return -1;
+}
+
+// Finds a peer that has the requested file
+int find_peer_with_file(const char *filename, int peer_count, struct peer_entry *peers) {
+    for (int i = 0; i < peer_count; i++) {
+        for (int j = 0; j < peers[i].file_count; j++) {
+            if (strcmp(peers[i].files[j], filename) == 0) {
+                return i;
+            }
+        }
+    }
+    return -1;
+}
+
+// Removes a peer from the registry by socket FD
+void remove_peer(int socket_fd, int peer_count, struct peer_entry *peers) {
+    int index = find_peer_by_socket(socket_fd);
+    if (index != -1) {
+        close(peers[index].socket_fd);
+        peers[index] = peers[peer_count - 1];
+        peer_count--;
+    }
+}
+
+// Handles a JOIN request from a peer
+void handle_join(int sockfd, uint32_t peer_id, int peer_count, struct peer_entry *peers) {
+    if (peer_count >= MAX_PEERS) return;
+
+    int index = peer_count++;
+    peers[index].id = peer_id;
+    peers[index].socket_fd = sockfd;
+    peers[index].file_count = 0;
+
+    socklen_t addrlen = sizeof(peers[index].address);
+    getpeername(sockfd, (struct sockaddr*)&peers[index].address, &addrlen);
+
+    printf("TEST] JOIN %u\n", peer_id);
+}
+
+// Handles a PUBLISH request and stores filenames sent by the peer
+void handle_publish(int sockfd, char *buf, int msg_len, struct peer_entry *peers) {
+    int index = find_peer_by_socket(sockfd);
+    if (index == -1) return;
+
+    int offset = 8;
+    int count = 0;
+
+    while (offset < msg_len && count < MAX_FILES) {
+        int len = strnlen(buf + offset, MAX_FILENAME_LEN);
+        if (len <= 0 || len >= MAX_FILENAME_LEN || offset + len + 1 > msg_len) break;
+        strncpy(peers[index].files[count], buf + offset, MAX_FILENAME_LEN);
+        count++;
+        offset += len + 1;
+    }
+
+    peers[index].file_count = count;
+
+    printf("TEST] PUBLISH %d", count);
+    for (int i = 0; i < count; i++) {
+        printf(" %s", peers[index].files[i]);
+    }
+    printf("\n");
+}
+
+// Handles a SEARCH request from a peer looking for a file
+void handle_search(int sockfd, char *buf, struct peer_entry *peers) {
+    char *filename = buf + 8;
+    int index = find_peer_with_file(filename);
+
+    char response[14]; 
+    memcpy(response, "SEARCHOK", 8);
+
+    uint32_t id = 0;
+    uint32_t ip = 0;
+    uint16_t port = 0;
+
+    if (index != -1) {
+        ip = peers[index].address.sin_addr.s_addr;
+        port = peers[index].address.sin_port;
+        id = peers[index].id;
+
+        memcpy(response + 8, &ip, 4);
+        memcpy(response + 12, &port, 2);
+    } else {
+        memset(response + 8, 0, 6);
+    }
+
+    send(sockfd, response, 14, 0);
+
+    struct in_addr addr;
+    addr.s_addr = ip;
+    char ip_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &addr, ip_str, INET_ADDRSTRLEN);
+
+    printf("TEST] SEARCH %s %u %s:%u\n",
+        filename,
+        id,
+        index != -1 ? ip_str : "0.0.0.0",
+        index != -1 ? ntohs(port) : 0
+    );
 }
