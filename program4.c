@@ -28,8 +28,8 @@ int find_peer_by_socket(int socket_fd, int peer_count, struct peer_entry *peers)
 int find_peer_with_file(const char *filename, int peer_count, struct peer_entry *peers);
 void remove_peer(int socket_fd, int *peer_count, struct peer_entry *peers);
 void handle_join(int sockfd, uint32_t peer_id, int *peer_count, struct peer_entry *peers);
-void handle_publish(int sockfd, char *buf, int msg_len, struct peer_entry *peers);
-void handle_search(int sockfd, char *buf, struct peer_entry *peers);
+void handle_publish(int sockfd, char *buf, int msg_len, int peer_count, struct peer_entry *peers);
+void handle_search(int sockfd, char *buf, int peer_count, struct peer_entry *peers);
 
 // Main function initializes server and handles client communication
 int main(int argc, char *argv[]) {
@@ -123,9 +123,9 @@ int main(int argc, char *argv[]) {
                         memcpy(&peer_id, buffer + 4, 4);
                         handle_join(i, ntohl(peer_id), &peer_count, peers);
                     } else if (strncmp(buffer, "PUBLISH", 7) == 0 && bytes_received >= 8) {
-                        handle_publish(i, buffer, bytes_received, peers);
+                        handle_publish(i, buffer, bytes_received, peer_count, peers);
                     } else if (strncmp(buffer, "SEARCH", 6) == 0 && bytes_received >= 8) {
-                        handle_search(i, buffer, peers);
+                        handle_search(i, buffer, peer_count, peers);
                     }
                 }
             }
@@ -183,8 +183,8 @@ void handle_join(int sockfd, uint32_t peer_id, int *peer_count, struct peer_entr
 }
 
 // Handles a PUBLISH request and stores filenames sent by the peer
-void handle_publish(int sockfd, char *buf, int msg_len, struct peer_entry *peers) {
-    int index = find_peer_by_socket(sockfd, MAX_PEERS, peers); // or pass peer_count if accessible
+void handle_publish(int sockfd, char *buf, int msg_len, int peer_count, struct peer_entry *peers) {
+    int index = find_peer_by_socket(sockfd, peer_count, peers);
     if (index == -1) return;
 
     int offset = 8;
@@ -208,9 +208,9 @@ void handle_publish(int sockfd, char *buf, int msg_len, struct peer_entry *peers
 }
 
 // Handles a SEARCH request from a peer looking for a file
-void handle_search(int sockfd, char *buf, struct peer_entry *peers) {
+void handle_search(int sockfd, char *buf, int peer_count, struct peer_entry *peers) {
     char *filename = buf + 8;
-    int index = find_peer_with_file(filename, MAX_PEERS, peers); // or use peer_count
+    int index = find_peer_with_file(filename, peer_count, peers);
 
     char response[14];
     memcpy(response, "SEARCHOK", 8);
