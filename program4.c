@@ -14,6 +14,7 @@
 #define MAX_FILENAME_LEN 100
 #define MAX_BUF_SIZE 1024
 
+// Structure representing a peer entry
 struct peer_entry {
     uint32_t id;
     int socket_fd;
@@ -25,6 +26,7 @@ struct peer_entry {
 struct peer_entry peers[MAX_PEERS];
 int peer_count = 0;
 
+// Finds the index of a peer based on its socket FD
 int find_peer_by_socket(int socket_fd) {
     for (int i = 0; i < peer_count; i++) {
         if (peers[i].socket_fd == socket_fd)
@@ -33,6 +35,7 @@ int find_peer_by_socket(int socket_fd) {
     return -1;
 }
 
+// Finds a peer that has the requested file
 int find_peer_with_file(const char *filename) {
     for (int i = 0; i < peer_count; i++) {
         for (int j = 0; j < peers[i].file_count; j++) {
@@ -44,6 +47,7 @@ int find_peer_with_file(const char *filename) {
     return -1;
 }
 
+// Removes a peer from the registry by socket FD
 void remove_peer(int socket_fd) {
     int index = find_peer_by_socket(socket_fd);
     if (index != -1) {
@@ -53,6 +57,7 @@ void remove_peer(int socket_fd) {
     }
 }
 
+// Handles a JOIN request from a peer
 void handle_join(int sockfd, uint32_t peer_id) {
     if (peer_count >= MAX_PEERS) return;
 
@@ -67,6 +72,7 @@ void handle_join(int sockfd, uint32_t peer_id) {
     printf("TEST] JOIN %u\n", peer_id);
 }
 
+// Handles a PUBLISH request and stores filenames sent by the peer
 void handle_publish(int sockfd, char *buf, int msg_len) {
     int index = find_peer_by_socket(sockfd);
     if (index == -1) return;
@@ -91,11 +97,12 @@ void handle_publish(int sockfd, char *buf, int msg_len) {
     printf("\n");
 }
 
+// Handles a SEARCH request from a peer looking for a file
 void handle_search(int sockfd, char *buf) {
     char *filename = buf + 8;
     int index = find_peer_with_file(filename);
 
-    char response[14];  // SEARCHOK + IP (4) + Port (2)
+    char response[14]; 
     memcpy(response, "SEARCHOK", 8);
 
     uint32_t id = 0;
@@ -128,6 +135,7 @@ void handle_search(int sockfd, char *buf) {
     );
 }
 
+// Main function initializes server and handles client communication
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <port>\n", argv[0]);
@@ -139,15 +147,18 @@ int main(int argc, char *argv[]) {
     socklen_t addrlen;
     char buffer[MAX_BUF_SIZE];
 
+    // Create socket
     registry_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (registry_fd < 0) {
         perror("socket");
         exit(1);
     }
 
+    // Allow port reuse
     int opt = 1;
     setsockopt(registry_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
+     // Bind socket to given port
     memset(&registry_addr, 0, sizeof(registry_addr));
     registry_addr.sin_family = AF_INET;
     registry_addr.sin_port = htons(atoi(argv[1]));
@@ -159,17 +170,20 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
+    // Listen for incoming connections
     if (listen(registry_fd, MAX_PEERS) < 0) {
         perror("listen");
         close(registry_fd);
         exit(1);
     }
 
+    // Initialize FD sets for select()
     fd_set master_set, read_fds;
     FD_ZERO(&master_set);
     FD_SET(registry_fd, &master_set);
     max_fd = registry_fd;
 
+    // Main server loop
     while (1) {
         read_fds = master_set;
 
@@ -178,6 +192,7 @@ int main(int argc, char *argv[]) {
             exit(1);
         }
 
+        // Check which sockets are ready
         for (int i = 0; i <= max_fd; i++) {
             if (!FD_ISSET(i, &read_fds)) continue;
 
@@ -191,6 +206,7 @@ int main(int argc, char *argv[]) {
                 FD_SET(new_fd, &master_set);
                 if (new_fd > max_fd) max_fd = new_fd;
             } else {
+                // Handle data from existing peer
                 int bytes_received = recv(i, buffer, MAX_BUF_SIZE, 0);
                 if (bytes_received <= 0) {
                     remove_peer(i);
@@ -202,6 +218,7 @@ int main(int argc, char *argv[]) {
                     else
                         buffer[MAX_BUF_SIZE - 1] = '\0';
 
+                     // Dispatch request based on command
                     if (strncmp(buffer, "JOIN", 4) == 0 && bytes_received >= 8) {
                         uint32_t peer_id;
                         memcpy(&peer_id, buffer + 4, 4);
