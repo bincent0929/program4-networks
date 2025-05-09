@@ -20,7 +20,7 @@ struct peer_entry {
     int socket_fd;
     int file_count;
     char files[MAX_FILES][MAX_FILENAME_LEN];
-    struct sockaddr_in address;
+    struct sockaddr_storage address;
 };
 
 // peer_count and struct peers[MAX_PEERS]
