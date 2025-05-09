@@ -42,8 +42,12 @@ int main(int argc, char *argv[]) {
 	int peer_count = 0;
     
 	int registry_fd, new_fd, max_fd;
-    struct sockaddr_in registry_addr, peer_addr;
+    struct sockaddr_in registry_addr;
+    
+    // address and its length for the peer
+    struct sockaddr_storage peer_addr;
     socklen_t addrlen;
+    
     char buffer[MAX_BUF_SIZE];
 
     // Create socket
@@ -97,7 +101,8 @@ int main(int argc, char *argv[]) {
 
             if (i == registry_fd) {
                 addrlen = sizeof(peer_addr);
-                new_fd = accept(registry_fd, (struct sockaddr*)&peer_addr, &addrlen);
+                new_fd = accept(registry_fd, (struct sockaddr_storage*)&peer_addr, &addrlen);
+                // we need to add the peer_addr to one of the indeces in the peers
                 if (new_fd < 0) {
                     perror("accept");
                     continue;
