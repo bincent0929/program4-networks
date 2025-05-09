@@ -26,7 +26,7 @@ struct peer_entry {
 // peer_count and struct peers[MAX_PEERS]
 int find_peer_by_socket(int socket_fd, int& peer_count, struct peer_entry *peers);
 int find_peer_with_file(const char *filename, int& peer_count, struct peer_entry *peers);
-void remove_peer(int socket_fd, int& peer_count);
+void remove_peer(int socket_fd, int& peer_count, struct peer_entry *peers);
 void handle_join(int sockfd, uint32_t peer_id, int& peer_count, struct peer_entry *peers);
 void handle_publish(int sockfd, char *buf, int msg_len, struct peer_entry *peers);
 void handle_search(int sockfd, char *buf, struct peer_entry *peers);
