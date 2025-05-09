@@ -162,8 +162,10 @@ void remove_peer(int socket_fd, int *peer_count, struct peer_entry *peers) {
     int index = find_peer_by_socket(socket_fd, *peer_count, peers);
     if (index != -1) {
         close(peers[index].socket_fd);
-        peers[index] = peers[*peer_count - 1];
+        peers[index] = peers[*peer_count - 1]; // isn't this creating a repeat of the peer before it?
         (*peer_count)--;
+        // it seems like all this does is overwrite the value at the index
+        // then change the peer count so that we can't access the value in the final index
     }
 }
 
@@ -175,8 +177,9 @@ void handle_join(int sockfd, uint32_t peer_id, int *peer_count, struct peer_entr
     peers[index].id = peer_id;
     peers[index].socket_fd = sockfd;
     peers[index].file_count = 0;
+    // address value should be set here?
 
-    socklen_t addrlen = sizeof(peers[index].address);
+    socklen_t addrlen = sizeof(peers[index].address); // where is this address value set?
     getpeername(sockfd, (struct sockaddr*)&peers[index].address, &addrlen);
 
     printf("TEST] JOIN %u\n", peer_id);
@@ -194,7 +197,8 @@ void handle_publish(int sockfd, char *buf, int msg_len, int peer_count, struct p
         int len = strnlen(buf + offset, MAX_FILENAME_LEN);
         if (len <= 0 || len >= MAX_FILENAME_LEN || offset + len + 1 > msg_len) break;
         strncpy(peers[index].files[count], buf + offset, MAX_FILENAME_LEN);
-        count++;
+        count++; // why don't we iterate peers[index].file_count here?
+        // peers[index].file_count++
         offset += len + 1;
     }
 
@@ -220,6 +224,7 @@ void handle_search(int sockfd, char *buf, int peer_count, struct peer_entry *pee
     uint16_t port = 0;
 
     if (index != -1) {
+        // could you indicate where these values are set for the peers?
         ip = peers[index].address.sin_addr.s_addr;
         port = peers[index].address.sin_port;
         id = peers[index].id;
