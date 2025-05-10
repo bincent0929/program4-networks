@@ -97,6 +97,7 @@ int main(int argc, char *argv[]) {
 				char buf[MAX_BUF_SIZE];
 				int bytes_received = recv(s, buf, sizeof buf, 0);
 
+                // EVERYTHING BELOW HERE SHOULD BE CHECKED
                 if (bytes_received <= 0) {
                     remove_peer(s, &peer_count, peers);
                     FD_CLR(s, &max_socket);
