@@ -14,6 +14,9 @@
 #define MAX_FILENAME_LEN 100
 #define MAX_BUF_SIZE 1024
 
+int find_max_fd(const fd_set *fs);
+int bind_and_listen( const char *service );
+
 // Structure representing a peer entry
 struct peer_entry {
     uint32_t id;
