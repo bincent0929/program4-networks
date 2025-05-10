@@ -172,6 +172,7 @@ void remove_peer(int socket_fd, int *peer_count, struct peer_entry *peers) {
         (*peer_count)--;
         // it seems like all this does is overwrite the value at the index
         // then change the peer count so that we can't access the value in the final index
+        // This copies the last peer into the slot of the peer being removed, then reduces the peer count.
     }
 }
 
@@ -203,7 +204,7 @@ void handle_publish(int sockfd, char *buf, int msg_len, int peer_count, struct p
         int len = strnlen(buf + offset, MAX_FILENAME_LEN);
         if (len <= 0 || len >= MAX_FILENAME_LEN || offset + len + 1 > msg_len) break;
         strncpy(peers[index].files[count], buf + offset, MAX_FILENAME_LEN);
-        count++; // why don't we iterate peers[index].file_count here?
+        count++; // why don't we iterate peers[index].file_count here? // count prevent partial or inconsistent updates
         // peers[index].file_count++
         offset += len + 1;
     }
