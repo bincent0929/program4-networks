@@ -101,7 +101,7 @@ int main(int argc, char *argv[]) {
 
             if (i == registry_fd) {
                 addrlen = sizeof(peer_addr);
-                new_fd = accept(registry_fd, (struct sockaddr_storage*)&peer_addr, &addrlen);
+                new_fd = accept(registry_fd, (struct sockaddr *)&peer_addr, &addrlen);
                 // we need to add the peer_addr to one of the indeces in the peers
                 if (new_fd < 0) {
                     perror("accept");
@@ -112,6 +112,7 @@ int main(int argc, char *argv[]) {
             } else {
                 // Handle data from existing peer
                 int bytes_received = recv(i, buffer, MAX_BUF_SIZE, 0);
+
                 if (bytes_received <= 0) {
                     remove_peer(i, &peer_count, peers);
                     FD_CLR(i, &master_set);
@@ -126,7 +127,7 @@ int main(int argc, char *argv[]) {
                     if (strncmp(buffer, "JOIN", 4) == 0 && bytes_received >= 8) {
                         uint32_t peer_id;
                         memcpy(&peer_id, buffer + 4, 4);
-                        handle_join(i, ntohl(peer_id), &peer_count, peers, peer_addr);
+                        handle_join(i, ntohl(peer_id), &peer_count, peers, &peer_addr);
                     } else if (strncmp(buffer, "PUBLISH", 7) == 0 && bytes_received >= 8) {
                         handle_publish(i, buffer, bytes_received, peer_count, peers);
                     } else if (strncmp(buffer, "SEARCH", 6) == 0 && bytes_received >= 8) {
@@ -182,7 +183,7 @@ void handle_join(int sockfd, uint32_t peer_id, int *peer_count, struct peer_entr
     peers[index].id = peer_id;
     peers[index].socket_fd = sockfd;
     peers[index].file_count = 0;
-    peers[index].address = peer_addr;
+    peers[index].address = *peer_addr;
 
     socklen_t addrlen = sizeof(peers[index].address);
     getpeername(sockfd, (struct sockaddr*)&peers[index].address, &addrlen);
@@ -218,7 +219,7 @@ void handle_publish(int sockfd, char *buf, int msg_len, int peer_count, struct p
 
 // Handles a SEARCH request from a peer looking for a file
 void handle_search(int sockfd, char *buf, int peer_count, struct peer_entry *peers) {
-    char *filename = buf + 8;
+    char *filename = buf + 6;
     int index = find_peer_with_file(filename, peer_count, peers);
 
     char response[14];
@@ -229,9 +230,10 @@ void handle_search(int sockfd, char *buf, int peer_count, struct peer_entry *pee
     uint16_t port = 0;
 
     if (index != -1) {
-        // could you indicate where these values are set for the peers?
-        ip = peers[index].address.sin_addr.s_addr;
-        port = peers[index].address.sin_port;
+        // could you indicate where these values are set for the peers? in the handle_join function
+        struct sockaddr_in *addr_in = (struct sockaddr_in *)&peers[index].address;
+        ip = addr_in->sin_addr.s_addr;
+        port = addr_in->sin_port;
         id = peers[index].id;
 
         memcpy(response + 8, &ip, 4);
