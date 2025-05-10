@@ -27,7 +27,7 @@ struct peer_entry {
 int find_peer_by_socket(int socket_fd, int peer_count, struct peer_entry *peers);
 int find_peer_with_file(const char *filename, int peer_count, struct peer_entry *peers);
 void remove_peer(int socket_fd, int *peer_count, struct peer_entry *peers);
-void handle_join(int sockfd, uint32_t peer_id, int *peer_count, struct peer_entry *peers, struct sockaddr *addr);
+void handle_join(int sockfd, uint32_t peer_id, int *peer_count, struct peer_entry *peers, struct sockaddr *peer_addr);
 void handle_publish(int sockfd, char *buf, int msg_len, int peer_count, struct peer_entry *peers);
 void handle_search(int sockfd, char *buf, int peer_count, struct peer_entry *peers);
 
@@ -108,7 +108,7 @@ int main(int argc, char *argv[]) {
                     if (strncmp(buf, "JOIN", 4) == 0 && bytes_received >= 8) {
                         uint32_t peer_id;
                         memcpy(&peer_id, buf + 4, 4);
-                        handle_join(s, ntohl(peer_id), &peer_count, peers, &remoteaddr);
+                        handle_join(s, ntohl(peer_id), &peer_count, peers, (struct sockaddr *)&remoteaddr);
                     } else if (strncmp(buf, "PUBLISH", 7) == 0 && bytes_received >= 8) {
                         handle_publish(s, buf, bytes_received, peer_count, peers);
                     } else if (strncmp(buf, "SEARCH", 6) == 0 && bytes_received >= 8) {
@@ -157,7 +157,7 @@ void remove_peer(int socket_fd, int *peer_count, struct peer_entry *peers) {
 }
 
 // Handles a JOIN request from a peer
-void handle_join(int sockfd, uint32_t peer_id, int *peer_count, struct peer_entry *peers, struct sockaddr * remoteaddr) {
+void handle_join(int sockfd, uint32_t peer_id, int *peer_count, struct peer_entry *peers, struct sockaddr *peer_addr) {
     if (*peer_count >= MAX_PEERS) return;
 
     int index = (*peer_count)++;
