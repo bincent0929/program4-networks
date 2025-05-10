@@ -57,11 +57,7 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    // Allow port reuse
-    int opt = 1;
-    setsockopt(registry_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-     // Bind socket to given port
+    // Bind socket to given port
     memset(&registry_addr, 0, sizeof(registry_addr));
     registry_addr.sin_family = AF_INET;
     registry_addr.sin_port = htons(atoi(argv[1]));
