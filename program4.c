@@ -9,7 +9,7 @@
 #include <sys/types.h>
 #include <sys/select.h>
 
-#define MAX_PEERS 10
+#define MAX_PEERS 5
 #define MAX_FILES 10
 #define MAX_FILENAME_LEN 100
 #define MAX_BUF_SIZE 1024
