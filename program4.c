@@ -116,8 +116,8 @@ int main(int argc, char *argv[]) {
                     switch (cmd) {
                     case 0x00:  // JOIN
                         if (bytes_received >= 5) {                            
-                             uint32_t peer_id;
-                             memcpy(&peer_id, buf + 1, 4);
+                            uint32_t peer_id;
+                            memcpy(&peer_id, buf + 1, sizeof(uint32_t));
                             handle_join(s, ntohl(peer_id), &peer_count, peers, (struct sockaddr *)&remoteaddr);
                         }
                         break;
@@ -241,12 +241,15 @@ void handle_search(int sockfd, char *buf, int peer_count, struct peer_entry *pee
     if (index != -1) {
         // could you indicate where these values are set for the peers? in the handle_join function
         struct sockaddr_in *addr_in = (struct sockaddr_in *)&peers[index].address;
+        id = peers[index].id;
         ip = addr_in->sin_addr.s_addr;
         port = addr_in->sin_port;
-        id = peers[index].id;
 
-        memcpy(response + 8, &ip, 4);
-        memcpy(response + 12, &port, 2);
+        uint32_t net_ip = htonl(ip);
+        uint16_t net_port = htons(port);
+
+        memcpy(response + 8, &net_ip, 4);
+        memcpy(response + 12, &net_port, 2);
     } else {
         memset(response + 8, 0, 6);
     }
