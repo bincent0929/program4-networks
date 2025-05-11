@@ -8,11 +8,13 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/select.h>
+#include <netdb.h>
 
 #define MAX_PEERS 5
 #define MAX_FILES 10
 #define MAX_FILENAME_LEN 100
 #define MAX_BUF_SIZE 1024
+#define MAX_PENDING 5
 
 int find_max_fd(const fd_set *fs);
 int bind_and_listen( const char *service );
@@ -55,7 +57,7 @@ int main(int argc, char *argv[]) {
 	FD_ZERO(&call_set);
 
 	// listen_socket is the fd on which the program can accept() new connections
-	int listen_socket = bind_and_listen(htons(atoi(argv[1])));
+	int listen_socket = bind_and_listen(argv[1]);
 	FD_SET(listen_socket, &all_sockets);
 
 	// max_socket should always contain the socket fd with the largest value, just one
@@ -65,6 +67,8 @@ int main(int argc, char *argv[]) {
     // Main server loop
     while (1) {
         call_set = all_sockets;
+        struct sockaddr_storage remoteaddr;
+		socklen_t addrlen = sizeof remoteaddr;
 		int num_s = select(max_socket+1, &call_set, NULL, NULL, NULL);
 		if( num_s < 0 ){
 			perror("ERROR in select() call");
@@ -82,8 +86,6 @@ int main(int argc, char *argv[]) {
 				// What should happen with a new connection?
 				// You need to call at least one function here
 				// and update some variables.
-				struct sockaddr_storage remoteaddr;
-				socklen_t addrlen = sizeof remoteaddr;
 				int newsock = accept(listen_socket, (struct sockaddr*)&remoteaddr, &addrlen);
 				FD_SET(newsock, &all_sockets);
 				max_socket = find_max_fd(&all_sockets);
@@ -100,7 +102,7 @@ int main(int argc, char *argv[]) {
                 // EVERYTHING BELOW HERE SHOULD BE CHECKED
                 if (bytes_received <= 0) {
                     remove_peer(s, &peer_count, peers);
-                    FD_CLR(s, &max_socket);
+                    FD_CLR(s, &all_sockets);
                     close(s);
                 } else {
                     if (bytes_received < MAX_BUF_SIZE)
@@ -109,16 +111,34 @@ int main(int argc, char *argv[]) {
                         buf[MAX_BUF_SIZE - 1] = '\0';
 
                      // Dispatch request based on command
-                    if (strncmp(buf, "JOIN", 4) == 0 && bytes_received >= 8) {
-                        uint32_t peer_id;
-                        memcpy(&peer_id, buf + 4, 4);
-                        handle_join(s, ntohl(peer_id), &peer_count, peers, (struct sockaddr *)&remoteaddr);
-                    } else if (strncmp(buf, "PUBLISH", 7) == 0 && bytes_received >= 8) {
-                        handle_publish(s, buf, bytes_received, peer_count, peers);
-                    } else if (strncmp(buf, "SEARCH", 6) == 0 && bytes_received >= 8) {
-                        handle_search(s, buf, peer_count, peers);
+                    
+                    unsigned char cmd = buf[0];
+                    switch (cmd) {
+                    case 0x00:  // JOIN
+                        if (bytes_received >= 5) {                            
+                             uint32_t peer_id;
+                             memcpy(&peer_id, buf + 1, 4);
+                            handle_join(s, ntohl(peer_id), &peer_count, peers, (struct sockaddr *)&remoteaddr);
+                        }
+                        break;
+
+                    case 0x01:  // PUBLISH
+                        if (bytes_received >= 2) {                           
+                            handle_publish(s, buf, bytes_received, peer_count, peers);
+                        }
+                        break;
+
+                    case 0x02:  // SEARCH
+                        if (bytes_received >= 2) {                    
+                            handle_search(s, buf, peer_count, peers);
+                        }
+                        break;
+
+                    default:
+                        printf("[DEBUG] Unknown command byte: 0x%02X\n", cmd);
                     }
                 }
+
 			}
 		}
     }
@@ -168,7 +188,8 @@ void handle_join(int sockfd, uint32_t peer_id, int *peer_count, struct peer_entr
     peers[index].id = peer_id;
     peers[index].socket_fd = sockfd;
     peers[index].file_count = 0;
-    peers[index].address = *peer_addr;
+    memcpy(&peers[index].address, peer_addr, sizeof(struct sockaddr_storage));
+
 
     socklen_t addrlen = sizeof(peers[index].address);
     getpeername(sockfd, (struct sockaddr*)&peers[index].address, &addrlen);
@@ -181,10 +202,11 @@ void handle_publish(int sockfd, char *buf, int msg_len, int peer_count, struct p
     int index = find_peer_by_socket(sockfd, peer_count, peers);
     if (index == -1) return;
 
-    int offset = 8;
+    int offset = 2;
+    int expected_count = (unsigned char)buf[1];
     int count = 0;
 
-    while (offset < msg_len && count < MAX_FILES) {
+    while (offset < msg_len && count < expected_count && count < MAX_FILES) {
         int len = strnlen(buf + offset, MAX_FILENAME_LEN);
         if (len <= 0 || len >= MAX_FILENAME_LEN || offset + len + 1 > msg_len) break;
         strncpy(peers[index].files[count], buf + offset, MAX_FILENAME_LEN);
@@ -195,7 +217,7 @@ void handle_publish(int sockfd, char *buf, int msg_len, int peer_count, struct p
 
     peers[index].file_count = count;
 
-    printf("TEST] PUBLISH %d", count);
+    printf("TEST] PUBLISH %d", expected_count);
     for (int i = 0; i < count; i++) {
         printf(" %s", peers[index].files[i]);
     }
@@ -204,7 +226,7 @@ void handle_publish(int sockfd, char *buf, int msg_len, int peer_count, struct p
 
 // Handles a SEARCH request from a peer looking for a file
 void handle_search(int sockfd, char *buf, int peer_count, struct peer_entry *peers) {
-    char *filename = buf + 6;
+    char *filename = buf + 1;
     int index = find_peer_with_file(filename, peer_count, peers);
 
     char response[14];
