@@ -200,29 +200,31 @@ void handle_join(int sockfd, uint32_t peer_id, int *peer_count, struct peer_entr
 // Handles a PUBLISH request and stores filenames sent by the peer
 void handle_publish(int sockfd, char *buf, int msg_len, int peer_count, struct peer_entry *peers) {
     int index = find_peer_by_socket(sockfd, peer_count, peers);
-    if (index == -1) return;
+    if (index == -1 || msg_len < 6) return;
 
-    int offset = 2;
-    int expected_count = (unsigned char)buf[1];
+    // Skip 1 byte command + 4 bytes of peer ID
+    int offset = 5;
     int count = 0;
 
-    while (offset < msg_len && count < expected_count && count < MAX_FILES) {
+    while (offset < msg_len && count < MAX_FILES) {
         int len = strnlen(buf + offset, MAX_FILENAME_LEN);
-        if (len <= 0 || len >= MAX_FILENAME_LEN || offset + len + 1 > msg_len) break;
+        if (len <= 0 || len >= MAX_FILENAME_LEN || offset + len + 1 > msg_len)
+            break;
+
         strncpy(peers[index].files[count], buf + offset, MAX_FILENAME_LEN);
-        count++; // why don't we iterate peers[index].file_count here? // count prevent partial or inconsistent updates
-        // peers[index].file_count++
+        count++;
         offset += len + 1;
     }
 
     peers[index].file_count = count;
 
-    printf("TEST] PUBLISH %d", expected_count);
+    printf("TEST] PUBLISH %d", count);
     for (int i = 0; i < count; i++) {
         printf(" %s", peers[index].files[i]);
     }
     printf("\n");
 }
+
 
 // Handles a SEARCH request from a peer looking for a file
 void handle_search(int sockfd, char *buf, int peer_count, struct peer_entry *peers) {
