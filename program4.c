@@ -25,7 +25,7 @@ struct peer_entry {
     int socket_fd;
     int file_count;
     char files[MAX_FILES][MAX_FILENAME_LEN];
-    struct sockaddr_storage address;
+    struct sockaddr_in address;
 };
 
 // peer_count and struct peers[MAX_PEERS]
@@ -67,8 +67,6 @@ int main(int argc, char *argv[]) {
     // Main server loop
     while (1) {
         call_set = all_sockets;
-        struct sockaddr_storage remoteaddr;
-		socklen_t addrlen = sizeof remoteaddr;
 		int num_s = select(max_socket+1, &call_set, NULL, NULL, NULL);
 		if( num_s < 0 ){
 			perror("ERROR in select() call");
@@ -82,14 +80,17 @@ int main(int argc, char *argv[]) {
 				continue;
 
 			// A new connection is ready
-			if( s == listen_socket ){
-				// What should happen with a new connection?
-				// You need to call at least one function here
-				// and update some variables.
-				int newsock = accept(listen_socket, (struct sockaddr*)&remoteaddr, &addrlen);
-				FD_SET(newsock, &all_sockets);
-				max_socket = find_max_fd(&all_sockets);
-			}
+			if (s == listen_socket) {
+                struct sockaddr_storage remoteaddr;
+                socklen_t addrlen = sizeof(remoteaddr);
+
+                int newsock = accept(listen_socket, (struct sockaddr*)&remoteaddr, &addrlen);
+                if (newsock >= 0) {
+                    FD_SET(newsock, &all_sockets);
+                    max_socket = find_max_fd(&all_sockets);
+                }
+            }
+
 
 			// A connected socket is ready
 			else{
@@ -115,16 +116,24 @@ int main(int argc, char *argv[]) {
                     unsigned char cmd = buf[0];
                     switch (cmd) {
                     case 0x00:  // JOIN
-                        if (bytes_received >= 5) {                            
+                        if (bytes_received >= 5) {
                             uint32_t peer_id;
                             memcpy(&peer_id, buf + 1, sizeof(uint32_t));
-                            handle_join(s, ntohl(peer_id), &peer_count, peers, (struct sockaddr *)&remoteaddr);
+
+                            // FIX: get correct IP/port *now* for this specific socket
+                            struct sockaddr_storage peeraddr;
+                            socklen_t addrlen = sizeof(peeraddr);
+                            getpeername(s, (struct sockaddr *)&peeraddr, &addrlen);
+
+                            handle_join(s, ntohl(peer_id), &peer_count, peers, NULL);
                         }
                         break;
 
                     case 0x01:  // PUBLISH
-                        if (bytes_received >= 2) {                           
+                        if (bytes_received >= 6) {
                             handle_publish(s, buf, bytes_received, peer_count, peers);
+                        } else {
+                            fprintf(stderr, "[DEBUG] Ignored short PUBLISH message (len = %d)\n", bytes_received);
                         }
                         break;
 
@@ -181,18 +190,16 @@ void remove_peer(int socket_fd, int *peer_count, struct peer_entry *peers) {
 }
 
 // Handles a JOIN request from a peer
-void handle_join(int sockfd, uint32_t peer_id, int *peer_count, struct peer_entry *peers, struct sockaddr *peer_addr) {
+void handle_join(int sockfd, uint32_t peer_id, int *peer_count, struct peer_entry *peers, struct sockaddr *unused) {
     if (*peer_count >= MAX_PEERS) return;
 
     int index = (*peer_count)++;
     peers[index].id = peer_id;
     peers[index].socket_fd = sockfd;
     peers[index].file_count = 0;
-    memcpy(&peers[index].address, peer_addr, sizeof(struct sockaddr_storage));
 
-
-    socklen_t addrlen = sizeof(peers[index].address);
-    getpeername(sockfd, (struct sockaddr*)&peers[index].address, &addrlen);
+    socklen_t len = sizeof(struct sockaddr_in);
+    getpeername(sockfd, (struct sockaddr*)&peers[index].address, &len);
 
     printf("TEST] JOIN %u\n", peer_id);
 }
@@ -200,14 +207,23 @@ void handle_join(int sockfd, uint32_t peer_id, int *peer_count, struct peer_entr
 // Handles a PUBLISH request and stores filenames sent by the peer
 void handle_publish(int sockfd, char *buf, int msg_len, int peer_count, struct peer_entry *peers) {
     int index = find_peer_by_socket(sockfd, peer_count, peers);
-    if (index == -1 || msg_len < 6) return;
+    if (index == -1) {
+        fprintf(stderr, "[DEBUG] No matching peer for socket %d\n", sockfd);
+        return;
+    }
 
-    // Skip 1 byte command + 4 bytes of peer ID
-    int offset = 5;
+    if (msg_len <= 5) {
+        fprintf(stderr, "[DEBUG] Message too short for filenames (msg_len = %d)\n", msg_len);
+        return;
+    }
+
+    int offset = 5;  // Skip command (1 byte) + peer ID (4 bytes)
     int count = 0;
 
     while (offset < msg_len && count < MAX_FILES) {
         int len = strnlen(buf + offset, MAX_FILENAME_LEN);
+        fprintf(stderr, "[DEBUG] filename candidate = '%s' (len = %d)\n", buf + offset, len);
+
         if (len <= 0 || len >= MAX_FILENAME_LEN || offset + len + 1 > msg_len)
             break;
 
@@ -217,56 +233,59 @@ void handle_publish(int sockfd, char *buf, int msg_len, int peer_count, struct p
     }
 
     peers[index].file_count = count;
+    fprintf(stderr, "[DEBUG] Parsed %d filenames\n", count);
 
+    if (count == 0) {
+        fprintf(stderr, "[DEBUG] No filenames parsed — skipping PUBLISH print\n");
+        return;
+    }
+
+    // Print in required format
     printf("TEST] PUBLISH %d", count);
     for (int i = 0; i < count; i++) {
         printf(" %s", peers[index].files[i]);
     }
     printf("\n");
+    fflush(stdout);
 }
-
 
 // Handles a SEARCH request from a peer looking for a file
 void handle_search(int sockfd, char *buf, int peer_count, struct peer_entry *peers) {
     char *filename = buf + 1;
     int index = find_peer_with_file(filename, peer_count, peers);
 
-    char response[14];
-    memcpy(response, "SEARCHOK", 8);
-
     uint32_t id = 0;
-    uint32_t ip = 0;
+    struct in_addr ip_struct = {0};
     uint16_t port = 0;
 
     if (index != -1) {
-        // could you indicate where these values are set for the peers? in the handle_join function
-        struct sockaddr_in *addr_in = (struct sockaddr_in *)&peers[index].address;
         id = peers[index].id;
-        ip = addr_in->sin_addr.s_addr;
-        port = addr_in->sin_port;
-
-        uint32_t net_ip = htonl(ip);
-        uint16_t net_port = htons(port);
-
-        memcpy(response + 8, &net_ip, 4);
-        memcpy(response + 12, &net_port, 2);
-    } else {
-        memset(response + 8, 0, 6);
+        ip_struct = peers[index].address.sin_addr;
+        port = ntohs(peers[index].address.sin_port);  // convert to host byte order for printing/logging
     }
 
-    send(sockfd, response, 14, 0);
+    // Build SEARCHOK response with proper byte order
+    uint32_t net_id = htonl(id);
+    uint32_t net_ip;
+    memcpy(&net_ip, &ip_struct, sizeof(net_ip));  // sin_addr is already network byte order
+    uint16_t net_port = htons(port);
 
-    struct in_addr addr;
-    addr.s_addr = ip;
+    char response[11];
+    response[0] = 0x03;
+    memcpy(response + 1, &net_id, 4);
+    memcpy(response + 5, &net_ip, 4);
+    memcpy(response + 9, &net_port, 2);
+    send(sockfd, response, sizeof(response), 0);
+
+    // Log in host byte order
     char ip_str[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &addr, ip_str, INET_ADDRSTRLEN);
+    inet_ntop(AF_INET, &ip_struct, ip_str, INET_ADDRSTRLEN);
 
     printf("TEST] SEARCH %s %u %s:%u\n",
-        filename,
-        id,
-        index != -1 ? ip_str : "0.0.0.0",
-        index != -1 ? ntohs(port) : 0
-    );
+           filename,
+           id,
+           index != -1 ? ip_str : "0.0.0.0",
+           index != -1 ? port : 0);
 }
 
 // ******************************************************************************
